@@ -383,6 +383,7 @@ export class S3Driver implements StorageDriver {
   }
 
   // Some S3-compatible backends (e.g. OVHcloud) reject CopySourceIfMatch with 501.
+  // Tigris rejects it with 409 ConditionalRequestConflict, but only for multipart objects.
   private async copyObjectIfMatch({
     fromKey,
     toKey,
@@ -411,14 +412,26 @@ export class S3Driver implements StorageDriver {
           error.name === 'NotImplemented' ||
           error.$metadata?.httpStatusCode === 501;
 
-        if (!isNotImplemented) {
+        const isConditionalRequestConflict =
+          error.$metadata?.httpStatusCode === 409 &&
+          (error.name === 'ConditionalRequestConflict' ||
+            error.Code === 'ConditionalRequestConflict');
+
+        if (!isNotImplemented && !isConditionalRequestConflict) {
           throw error;
         }
 
-        this.supportsConditionalCopy = false;
-        this.logger.warn(
-          'S3 backend does not support CopySourceIfMatch, falling back to unconditional copies',
-        );
+        // A 409 is specific to this object, so later copies stay conditional.
+        if (isConditionalRequestConflict) {
+          this.logger.warn(
+            `S3 backend rejected CopySourceIfMatch on ${fromKey} with ConditionalRequestConflict, falling back to an unconditional copy`,
+          );
+        } else {
+          this.supportsConditionalCopy = false;
+          this.logger.warn(
+            'S3 backend does not support CopySourceIfMatch, falling back to unconditional copies',
+          );
+        }
       }
     }
 
